@@ -1,0 +1,35 @@
+# Unreal Engine : dossiers générés (recréés à la compilation / à l'ouverture)
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# Cache de l'éditeur
+*.VC.db
+*.opensdf
+*.opendb
+*.sdf
+*.suo
+*.sln
+*.slnx
+*.xcodeproj
+*.xcworkspace
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.sln.DotSettings.user
+
+# Fichiers temporaires
+*.tmp
+*.log
+Thumbs.db
+.DS_Store
+
+# Réglages locaux de Claude Code
+.claude/settings.local.json
