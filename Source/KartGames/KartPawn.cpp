@@ -1,7 +1,7 @@
 #include "KartPawn.h"
 
 #include "Camera/CameraComponent.h"
-#include "Components/BoxComponent.h"
+#include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
@@ -11,11 +11,14 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "InputActionValue.h"
 
-// Marge (en cm) sous la boîte pour considérer que le kart touche le sol
+// Marge (en cm) sous la sphère pour considérer que le kart touche le sol
 static constexpr float GroundSnapTolerance = 5.f;
 
-// Petit espace (en cm) entre la boîte et le sol pour qu'elle ne frotte pas dessus
+// Petit espace (en cm) entre la sphère et le sol pour qu'elle ne frotte pas dessus
 static constexpr float GroundClearance = 2.f;
+
+// La sphère qui cherche le sol est un peu plus petite (en cm) pour ne pas accrocher les murs qu'on longe
+static constexpr float GroundSweepInset = 5.f;
 
 // Une surface dont la normale a un Z plus grand que ça est un sol, sinon c'est un mur
 static constexpr float WalkableFloorZ = 0.7f;
@@ -24,16 +27,16 @@ AKartPawn::AKartPawn()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
-	// La boîte de collision est la racine : c'est elle qu'on déplace
-	CollisionBox = CreateDefaultSubobject<UBoxComponent>(TEXT("CollisionBox"));
-	CollisionBox->SetBoxExtent(FVector(70.f, 45.f, 25.f));
-	CollisionBox->SetCollisionProfileName(TEXT("Pawn"));
-	CollisionBox->SetSimulatePhysics(false);
-	RootComponent = CollisionBox;
+	// La sphère de collision est la racine : c'est elle qu'on déplace
+	CollisionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionSphere"));
+	CollisionSphere->SetSphereRadius(35.f);
+	CollisionSphere->SetCollisionProfileName(TEXT("Pawn"));
+	CollisionSphere->SetSimulatePhysics(false);
+	RootComponent = CollisionSphere;
 
-	// Les meshes sont juste visuels : pas de collision, c'est la boîte qui s'en occupe
+	// Les meshes sont juste visuels : pas de collision, c'est la sphère qui s'en occupe
 	BodyMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BodyMesh"));
-	BodyMesh->SetupAttachment(CollisionBox);
+	BodyMesh->SetupAttachment(CollisionSphere);
 	BodyMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
 	// Les roues sont attachées au châssis pour suivre son décalage pendant le drift
@@ -55,7 +58,7 @@ AKartPawn::AKartPawn()
 
 	// Caméra derrière et au-dessus du kart
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
-	SpringArm->SetupAttachment(CollisionBox);
+	SpringArm->SetupAttachment(CollisionSphere);
 	SpringArm->SetRelativeRotation(FRotator(-15.f, 0.f, 0.f));
 	SpringArm->TargetArmLength = 600.f;
 	SpringArm->SocketOffset = FVector(0.f, 0.f, 100.f);
@@ -186,23 +189,30 @@ void AKartPawn::OnJumpPressed(const FInputActionValue& Value)
 
 void AKartPawn::UpdateGround(float DeltaTime)
 {
-	// On lance un rayon vers le bas du kart pour trouver le sol
+	// On fait descendre la sphère sous le kart pour trouver le sol
+	// (elle touche le sol sur une zone arrondie, c'est plus stable qu'un simple rayon)
 	const FVector Start = GetActorLocation();
 	const FVector End = Start - GetActorUpVector() * GroundTraceDistance;
+	const FCollisionShape Sphere = FCollisionShape::MakeSphere(CollisionSphere->GetScaledSphereRadius() - GroundSweepInset);
 
 	FCollisionQueryParams Params;
 	Params.AddIgnoredActor(this);
 
 	FHitResult Hit;
-	const bool bHitSomething = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
+	const bool bHitSomething = GetWorld()->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, ECC_Visibility, Sphere, Params);
 
-	// Le rayon part du centre de la boîte : le sol est "touché" à une demi-hauteur de boîte
-	const float BoxHalfHeight = CollisionBox->GetScaledBoxExtent().Z;
-	const float RideHeight = BoxHalfHeight + GroundClearance;
-	bIsGrounded = bHitSomething && Hit.Distance <= RideHeight + GroundSnapTolerance && VerticalSpeed <= 0.f;
+	// Une surface trop raide n'est pas un sol (c'est un mur)
+	const bool bHitFloor = bHitSomething && FVector::DotProduct(Hit.Normal, GetActorUpVector()) >= WalkableFloorZ;
+
+	// Si on était déjà au sol, on y reste collé d'un peu plus loin pour ne pas décoller en haut des bosses
+	// (la sphère de recherche est plus petite : elle touche le sol GroundSweepInset plus bas)
+	const float RideDistance = GroundSweepInset + GroundClearance;
+	const float MaxGroundDistance = RideDistance + (bIsGrounded ? GroundStickDistance : GroundSnapTolerance);
+	bIsGrounded = bHitFloor && Hit.Distance <= MaxGroundDistance && VerticalSpeed <= 0.f;
 
 	// Si on voit un sol (même un peu loin), on s'aligne dessus, sinon on se remet droit
-	GroundNormal = bHitSomething ? Hit.ImpactNormal : FVector::UpVector;
+	// Hit.Normal d'une sphère est arrondi sur les arêtes : l'inclinaison change en douceur entre deux pentes
+	GroundNormal = bHitFloor ? Hit.Normal : FVector::UpVector;
 
 	if (bIsGrounded)
 	{
@@ -210,7 +220,7 @@ void AKartPawn::UpdateGround(float DeltaTime)
 		VerticalSpeed = 0.f;
 
 		// On recolle le kart à la bonne hauteur au-dessus du sol (vers le haut ou vers le bas)
-		const float HeightError = Hit.Distance - RideHeight;
+		const float HeightError = Hit.Distance - RideDistance;
 		AddActorWorldOffset(-GetActorUpVector() * HeightError, true);
 	}
 	else
@@ -271,8 +281,12 @@ void AKartPawn::UpdateSteering(float DeltaTime)
 		// En drift on tourne toujours du côté du drift :
 		// le joystick dans le même sens serre le virage, dans l'autre sens il l'élargit
 		const float SteerAlongDrift = SteerInput * DriftDirection;
-		Steer = DriftDirection * FMath::GetMappedRangeValueClamped(FVector2D(-1.f, 1.f), FVector2D(0.5f, 1.f), SteerAlongDrift);
-		Rate *= DriftTurnMultiplier;
+		const float DriftSteer = DriftDirection * FMath::GetMappedRangeValueClamped(FVector2D(-1.f, 1.f), FVector2D(0.5f, 1.f), SteerAlongDrift);
+
+		// On passe progressivement du virage normal au virage de drift (sinon le kart pivote d'un coup)
+		const float Blend = FMath::SmoothStep(0.f, 1.f, DriftBlend);
+		Steer = FMath::Lerp(SteerInput, DriftSteer, Blend);
+		Rate *= FMath::Lerp(1.f, DriftTurnMultiplier, Blend);
 	}
 
 	// En marche arrière la direction est inversée, comme une vraie voiture
@@ -298,6 +312,9 @@ void AKartPawn::UpdateDrift(float DeltaTime)
 		return;
 	}
 
+	// L'entrée dans le drift est progressive
+	DriftBlend = FMath::Min(1.f, DriftBlend + DeltaTime / DriftEnterTime);
+
 	// Le drift se charge seulement au sol
 	if (bIsGrounded)
 	{
@@ -312,11 +329,19 @@ void AKartPawn::UpdateBoost(float DeltaTime)
 
 void AKartPawn::MoveKart(float DeltaTime)
 {
-	// Déplacement = vers l'avant du kart + vers le haut/bas (gravité)
-	const FVector Delta = GetActorForwardVector() * CurrentSpeed * DeltaTime
+	// Au sol on avance le long de la pente, même si le kart n'a pas encore fini de s'incliner
+	// (sinon il décolle en haut des bosses et tape en bas des montées)
+	FVector Forward = GetActorForwardVector();
+	if (bIsGrounded)
+	{
+		Forward = FVector::VectorPlaneProject(Forward, GroundNormal).GetSafeNormal();
+	}
+
+	// Déplacement = vers l'avant + vers le haut/bas (gravité)
+	const FVector Delta = Forward * CurrentSpeed * DeltaTime
 		+ FVector::UpVector * VerticalSpeed * DeltaTime;
 
-	// "Sweep" = la boîte s'arrête si elle touche quelque chose au lieu de traverser
+	// "Sweep" = la sphère s'arrête si elle touche quelque chose au lieu de traverser
 	FHitResult Hit;
 	AddActorWorldOffset(Delta, true, &Hit);
 
@@ -325,12 +350,12 @@ void AKartPawn::MoveKart(float DeltaTime)
 		return;
 	}
 
-	// Si la boîte était déjà collée à quelque chose au départ, ce n'est pas un vrai choc
+	// Si la sphère était déjà collée à quelque chose au départ, ce n'est pas un vrai choc
 	const bool bHitWall = Hit.Normal.Z < WalkableFloorZ && !Hit.bStartPenetrating;
 	if (bHitWall)
 	{
 		// 0 = on frôle le mur, 1 = on le prend de face
-		const FVector MoveDirection = GetActorForwardVector() * FMath::Sign(CurrentSpeed);
+		const FVector MoveDirection = Forward * FMath::Sign(CurrentSpeed);
 		const float ImpactStrength = FMath::Clamp(-FVector::DotProduct(MoveDirection, Hit.Normal), 0.f, 1.f);
 
 		// On perd plus de vitesse quand on tape le mur de face
@@ -373,17 +398,20 @@ void AKartPawn::UpdateVisuals(float DeltaTime)
 	SetWheelRotation(WheelRearRight, WheelRearRightBaseRotation, 0.f);
 
 	// En drift, le châssis se met de travers
-	const float TargetSlideYaw = bIsDrifting ? DriftDirection * DriftSlideAngle : 0.f;
+	// (la cible monte avec DriftBlend pour que le châssis pivote en douceur)
+	const float TargetSlideYaw = bIsDrifting ? DriftDirection * DriftSlideAngle * FMath::SmoothStep(0.f, 1.f, DriftBlend) : 0.f;
 	const float CurrentSlideYaw = BodyMesh->GetRelativeRotation().Yaw - BodyBaseRotation.Yaw;
-	const float NewSlideYaw = FMath::FInterpTo(CurrentSlideYaw, TargetSlideYaw, DeltaTime, 6.f);
+	const float NewSlideYaw = FMath::FInterpTo(CurrentSlideYaw, TargetSlideYaw, DeltaTime, DriftSlideInterpSpeed);
 
 	FRotator BodyRotation = BodyBaseRotation;
 	BodyRotation.Yaw += NewSlideYaw;
 	BodyMesh->SetRelativeRotation(BodyRotation);
 
-	// La caméra tourne avec le châssis pour rester derrière l'arrière du kart pendant le drift
+	// La caméra suit le châssis avec du retard pour rester derrière l'arrière du kart sans tourner d'un coup
+	CameraSlideYaw = FMath::FInterpTo(CameraSlideYaw, NewSlideYaw * CameraDriftFollow, DeltaTime, CameraDriftInterpSpeed);
+
 	FRotator ArmRotation = SpringArmBaseRotation;
-	ArmRotation.Yaw += NewSlideYaw * CameraDriftFollow;
+	ArmRotation.Yaw += CameraSlideYaw;
 	SpringArm->SetRelativeRotation(ArmRotation);
 }
 
@@ -472,6 +500,7 @@ void AKartPawn::StartDrift()
 	bIsDrifting = true;
 	DriftDirection = SteerInput > 0.f ? 1 : -1;
 	DriftChargeTime = 0.f;
+	DriftBlend = 0.f;
 }
 
 void AKartPawn::EndDrift()

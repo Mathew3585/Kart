@@ -4,7 +4,7 @@
 #include "GameFramework/Pawn.h"
 #include "KartPawn.generated.h"
 
-class UBoxComponent;
+class USphereComponent;
 class UStaticMeshComponent;
 class USpringArmComponent;
 class UCameraComponent;
@@ -32,9 +32,10 @@ protected:
 
 	// ---------- Composants ----------
 
-	// Boîte de collision : c'est elle qui se déplace et qui bloque contre les murs
+	// Sphère de collision : c'est elle qui se déplace et qui bloque contre les murs
+	// (pas de coins, donc rien n'accroche dans les pentes et les bosses)
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Kart|Components")
-	TObjectPtr<UBoxComponent> CollisionBox;
+	TObjectPtr<USphereComponent> CollisionSphere;
 
 	// Châssis du kart
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Kart|Components")
@@ -117,9 +118,13 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Kart|Gravity")
 	float GravityStrength = 2500.f;
 
-	// Longueur du rayon vers le bas, depuis le centre de la boîte
+	// Distance sur laquelle on cherche le sol sous la sphère
 	UPROPERTY(EditAnywhere, Category = "Kart|Gravity")
 	float GroundTraceDistance = 80.f;
+
+	// Si on était au sol, on y reste collé tant que le sol est à moins de cette distance (évite de décoller en haut des bosses)
+	UPROPERTY(EditAnywhere, Category = "Kart|Gravity")
+	float GroundStickDistance = 30.f;
 
 	// Vitesse à laquelle le kart s'incline pour suivre la pente
 	UPROPERTY(EditAnywhere, Category = "Kart|Gravity")
@@ -142,6 +147,14 @@ protected:
 	// Angle visuel du châssis pendant le drift (en degrés)
 	UPROPERTY(EditAnywhere, Category = "Kart|Drift")
 	float DriftSlideAngle = 25.f;
+
+	// Temps (en secondes) pour entrer complètement dans le drift : virage et angle du châssis montent progressivement
+	UPROPERTY(EditAnywhere, Category = "Kart|Drift", meta = (ClampMin = "0.01"))
+	float DriftEnterTime = 0.4f;
+
+	// Vitesse à laquelle le châssis rejoint son angle (plus petit = plus doux)
+	UPROPERTY(EditAnywhere, Category = "Kart|Drift")
+	float DriftSlideInterpSpeed = 6.f;
 
 	// Temps de drift pour obtenir le mini-turbo (bleu)
 	UPROPERTY(EditAnywhere, Category = "Kart|Drift")
@@ -184,6 +197,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Kart|Camera", meta = (ClampMin = "0", ClampMax = "1"))
 	float CameraDriftFollow = 1.f;
 
+	// Vitesse à laquelle la caméra rattrape l'angle du châssis (plus petit = la caméra traîne plus)
+	UPROPERTY(EditAnywhere, Category = "Kart|Camera")
+	float CameraDriftInterpSpeed = 3.f;
+
 	// Vitesse à laquelle le FOV change
 	UPROPERTY(EditAnywhere, Category = "Kart|Camera")
 	float FieldOfViewInterpSpeed = 4.f;
@@ -220,6 +237,10 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, Category = "Kart|State")
 	float DriftChargeTime = 0.f;
+
+	// 0 = début du drift, 1 = drift complètement engagé (monte en DriftEnterTime secondes)
+	UPROPERTY(VisibleAnywhere, Category = "Kart|State")
+	float DriftBlend = 0.f;
 
 	UPROPERTY(VisibleAnywhere, Category = "Kart|State")
 	float BoostTimeRemaining = 0.f;
@@ -271,4 +292,7 @@ private:
 	FRotator WheelFrontRightBaseRotation;
 	FRotator WheelRearLeftBaseRotation;
 	FRotator WheelRearRightBaseRotation;
+
+	// Angle de la caméra pendant le drift (il suit celui du châssis avec du retard)
+	float CameraSlideYaw = 0.f;
 };
